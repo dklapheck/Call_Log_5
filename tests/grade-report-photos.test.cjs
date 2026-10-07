@@ -186,5 +186,74 @@ test('unusable thumbnails report errors and never replace a prior image', () => 
     assert.equal(result.inserted, 0);
     assert.equal(result.issues.length, 1);
     assert.equal(previous.removed, false);
+    assert.equal(result.pendingResize, 1);
   }
+});
+
+function pngHeader(width, height) {
+  const bytes = Buffer.alloc(24);
+  Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(bytes);
+  bytes.write('IHDR', 12);
+  bytes.writeUInt32BE(width, 16); bytes.writeUInt32BE(height, 20);
+  return [...bytes];
+}
+
+test('resized PNG validation checks true dimensions rather than display size', () => {
+  assert.equal(api.pngDimensions(pngHeader(900, 900)).width, 900);
+  assert.equal(api.pngDimensions(pngHeader(450, 900)).height, 900);
+  for (const [width, height] of [[901, 800], [500, 2000], [0, 800]]) {
+    assert.throws(() => api.pngDimensions(pngHeader(width, height)), /pixel dimensions/);
+  }
+  assert.throws(() => api.pngDimensions([1, 2, 3]), /PNG/);
+  // Apps Script's getBytes returns signed bytes; the parser accepts them.
+  assert.equal(api.pngDimensions(pngHeader(800, 600).map(x => x > 127 ? x - 256 : x)).width, 800);
+});
+
+test('resized previews are reused without duplicating images on the next import', () => {
+  const sheet = sheetMock(), p = plan(sheet);
+  api.applyPlan(p); p.seed = false;
+  sheet.getImages()[0].description += '; preview: resized';
+  const result = api.applyPlan(p);
+  assert.equal(result.unchanged, 1);
+  assert.equal(result.resized.length, 1);
+  assert.equal(sheet.getImages().length, 1);
+});
+
+function resizeServerMock() {
+  const sheet = sheetMock();
+  sheet.getLastRow = () => 4;
+  const getRange = sheet.getRange.bind(sheet);
+  sheet.getRange = (row, column) => row === 1 ? {getDisplayValue: () => 'Week 7'} :
+    row === 2 && column === 2 ? {getValues: () => [[''], [''], ['1']]} : getRange(row, column);
+  const state = {job: JSON.stringify({id: 'job', expires: Date.now() + 60000, column: 26, header: 'Week 7',
+    files: [{studentId: '1', fileId: 'f1', updated: 1000}]}), updated: 1000};
+  context.PropertiesService = {getDocumentProperties: () => ({getProperty: () => state.job,
+    setProperty(key, value) {state.job = value;}, deleteProperty() {state.job = null;}})};
+  context.Utilities = {base64Decode: value => [...Buffer.from(value, 'base64')], newBlob: bytes => ({bytes})};
+  context.SpreadsheetApp.getActiveSpreadsheet = () => ({getId: () => '1flssTRbZ74t1FFnoKlamhiSURcM-Byq5wraQHuI5TDw', getSheetByName: () => sheet});
+  context.LockService = {getDocumentLock: () => ({tryLock: () => true, releaseLock() {}})};
+  context.DriveApp = {getFileById: () => ({getLastUpdated: () => new Date(state.updated)})};
+  context.console = {log() {}, error() {}};
+  const payload = {jobId: 'job', studentId: '1', imageBase64: Buffer.from(pngHeader(900, 600)).toString('base64')};
+  return {sheet, state, payload};
+}
+
+test('resize callback finds moved student rows and completes its authorized session', () => {
+  const {sheet, state, payload} = resizeServerMock();
+  const dimensions = api.saveResized(payload);
+  assert.equal(dimensions.width, 900);
+  assert.equal(sheet.getImages()[0].anchor.row, 4);
+  assert.match(sheet.getImages()[0].description, /preview: resized/);
+  assert.equal(state.job, null);
+  assert.throws(() => api.saveResized(payload), /expired/);
+  assert.equal(sheet.getImages().length, 1);
+});
+
+test('resize callback rejects tampered students, oversized dimensions and stale source revisions', () => {
+  const {sheet, state, payload} = resizeServerMock();
+  assert.throws(() => api.saveResized({...payload, studentId: 'other'}), /pending resize/);
+  assert.throws(() => api.saveResized({...payload, imageBase64: Buffer.from(pngHeader(1512, 956)).toString('base64')}), /pixel dimensions/);
+  state.updated++;
+  assert.throws(() => api.saveResized(payload), /original photo changed/);
+  assert.equal(sheet.getImages().length, 0);
 });

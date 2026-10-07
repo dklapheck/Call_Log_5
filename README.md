@@ -31,6 +31,16 @@ code into the bound Apps Script project.
   full-resolution text. A missing or unusable thumbnail is reported; previous
   photos and original Drive files remain intact. Preview mode checks name matches
   only, not whether Google's image service will accept each image.
+- If both original and thumbnail exceed the pixel limit, the import report
+  automatically resizes the image in your browser to a maximum of 900 pixels on
+  either side (at most 810,000 pixels). PNG output is reduced further if needed
+  to stay below 2 MB. **Keep the report dialog open until resizing finishes.**
+  Server-side checks verify the actual PNG dimensions, byte size, pending student,
+  current roster row, weekly header, and original photo revision before insertion.
+  It needs no new service, third-party upload, or sharing change. Each resized
+  insertion gets a `GradeReportPhotosResize` success entry in Executions. Already
+  imported photos are retained. The original-file links still open full-resolution
+  reports; the initial WARN entry may precede successful resize callback entries.
 - Repeating an import does not duplicate the script's images. New files replace
   only images this tool previously created for that student in that column.
   Missing photos do not clear prior photos. Manually inserted images are retained.
@@ -40,3 +50,6 @@ code into the bound Apps Script project.
   no student data or private folder links belong in this public repository.
 
 Run the local matching/import-behavior tests with `node --test tests/grade-report-photos.test.cjs`.
+Optional native-Canvas integration test (requires `@napi-rs/canvas`):
+`node tests/canvas-grade-photo-resize.cjs [photo.png ...]`. It executes the dialog's
+actual resize/save JavaScript with PNG input files, without calling live Sheets.
