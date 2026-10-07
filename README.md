@@ -18,12 +18,19 @@ code into the bound Apps Script project.
 - It matches the filename's name against each student's preferred and legal
   names, including multipart names. The Canvas number before `_question_` is
   **not** treated as the roster Student Number. Ambiguous names, duplicate photos,
-  unmatched files, unsupported types, and images over 2 MB are reported/skipped.
+  unmatched files, and unsupported types are reported/skipped.
 - PNG, JPEG, and GIF files are embedded directly from private Drive blobs as
   **images over cells**, anchored in the weekly column, with aspect ratio retained.
   The photo column is 420 pixels wide; matched rows are at least 240 pixels high.
   Existing cell text, hyperlinks, notes, and formulas are retained. Original-photo
   links appear in the import/preview report.
+- If the original exceeds the byte or pixel insertion limits, it automatically
+  tries Drive's private thumbnail blob. Originals over 2 MB go straight to the
+  thumbnail; smaller files retry with a thumbnail only on a size/pixel-limit error.
+  The report identifies thumbnail previews; open the original report for readable
+  full-resolution text. A missing or unusable thumbnail is reported; previous
+  photos and original Drive files remain intact. Preview mode checks name matches
+  only, not whether Google's image service will accept each image.
 - Repeating an import does not duplicate the script's images. New files replace
   only images this tool previously created for that student in that column.
   Missing photos do not clear prior photos. Manually inserted images are retained.

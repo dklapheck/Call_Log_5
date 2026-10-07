@@ -34,13 +34,13 @@ test('ambiguous aliases and duplicate submissions never choose an arbitrary phot
   assert.match(result.issues[0], /multiple photos/);
 });
 
-test('rejects unmatched, unsupported and oversized files', () => {
+test('rejects unmatched/unsupported files but allows oversized originals for thumbnail fallback', () => {
   const a = student('1', 'Alex Gray', 'Gray', 'Alex');
   const result = api.matchFiles([a], [a], [file('unknown_person99_question_1_2_photo.png'),
     file('gray_alex99_question_1_2_photo.heic', 'f2', {mime: 'image/heic'}),
     file('gray_alex99_question_1_2_photo.png', 'f3', {size: 2097153})]);
-  assert.equal(result.matches.length, 0);
-  assert.equal(result.issues.length, 3);
+  assert.equal(result.matches.length, 1);
+  assert.equal(result.issues.length, 2);
 });
 
 test('destination and roster validation reject unsafe inputs', () => {
@@ -61,6 +61,7 @@ function sheetMock() {
     setRowHeight(row, height) { this.rowHeight = height; },
     insertImage(blob, column, row) {
       if (this.failInsert) throw new Error('image service failed');
+      if (blob.tooLarge) throw new Error('The blob was too large. The maximum blob size is 2MB. The maximum number of pixels is 1 million.');
       const image = {anchor: this.getRange(row, column), title: '', description: '', removed: false,
         getAltTextTitle() { return this.title; }, getAltTextDescription() { return this.description; },
         getAnchorCell() { return this.anchor; }, setAnchorCell(cell) { this.anchor = cell; return this; },
@@ -119,4 +120,71 @@ test('a Drive download failure causes no roster or image writes', () => {
   assert.throws(() => api.applyPlan(p), /no access/);
   assert.equal(sheet.seeded, null);
   assert.equal(sheet.getImages().length, 0);
+});
+
+test('pixel-limit failures retry with private thumbnail and keep the result on reruns', () => {
+  const sheet = sheetMock();
+  let thumbnailCalls = 0;
+  const p = plan(sheet, file('gray_alex99_question_1_2_photo.png', 'f1', {driveFile: {
+    getBlob: () => ({tooLarge: true}),
+    getThumbnail: () => { thumbnailCalls++; return {getBytes: () => [1, 2, 3]}; }
+  }}));
+  let result = api.applyPlan(p);
+  assert.equal(result.inserted, 1);
+  assert.equal(result.thumbnails.length, 1);
+  assert.equal(result.issues.length, 0);
+  assert.equal(thumbnailCalls, 1);
+  assert.match(sheet.getImages()[0].description, /preview: thumbnail/);
+  p.seed = false;
+  result = api.applyPlan(p);
+  assert.equal(result.unchanged, 1);
+  assert.equal(thumbnailCalls, 1);
+  assert.equal(sheet.getImages().length, 1);
+});
+
+test('originals above 2 MB use thumbnails without downloading the original', () => {
+  const sheet = sheetMock(), p = plan(sheet, file('gray_alex99_question_1_2_photo.png', 'f1', {
+    size: 2097153, driveFile: {
+      getBlob() { throw new Error('Should not download large original'); },
+      getThumbnail: () => ({getBytes: () => [1, 2, 3]})
+    }
+  }));
+  assert.equal(api.applyPlan(p).thumbnails.length, 1);
+});
+
+test('missing thumbnails preserve the previous image and report the failure', () => {
+  const sheet = sheetMock(), p = plan(sheet);
+  api.applyPlan(p); p.seed = false;
+  const previous = sheet.getImages()[0];
+  p.matches[0].file = file('gray_alex99_question_1_3_photo.png', 'new-file', {driveFile: {
+    getBlob: () => ({tooLarge: true}), getThumbnail: () => null
+  }});
+  const result = api.applyPlan(p);
+  assert.equal(result.inserted, 0);
+  assert.equal(previous.removed, false);
+  assert.match(result.issues[0], /no thumbnail/);
+});
+
+test('unrelated insertion errors do not attempt thumbnail fallback', () => {
+  const sheet = sheetMock(); sheet.failInsert = true;
+  const p = plan(sheet, file('gray_alex99_question_1_2_photo.png', 'f1', {driveFile: {
+    getBlob: () => ({}), getThumbnail() { throw new Error('Should not request a thumbnail'); }
+  }}));
+  const result = api.applyPlan(p);
+  assert.match(result.issues[0], /image service failed/);
+});
+
+test('unusable thumbnails report errors and never replace a prior image', () => {
+  for (const thumbnail of [{getBytes: () => ({length: 2097153})}, {tooLarge: true, getBytes: () => [1]}]) {
+    const sheet = sheetMock(), p = plan(sheet);
+    api.applyPlan(p); p.seed = false;
+    const previous = sheet.getImages()[0];
+    p.matches[0].file = file('gray_alex99_question_1_3_photo.png', 'new-file', {driveFile: {
+      getBlob: () => ({tooLarge: true}), getThumbnail: () => thumbnail
+    }});
+    const result = api.applyPlan(p);
+    assert.equal(result.inserted, 0);
+    assert.equal(result.issues.length, 1);
+    assert.equal(previous.removed, false);
+  }
 });
