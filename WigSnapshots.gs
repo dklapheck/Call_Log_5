@@ -1,4 +1,18 @@
-/** 10RosterHR WIG snapshots v1.5. Replace the old WigSnapshots Script file.
+/** 10RosterHR WIG snapshots v1.9. Replace the old WigSnapshots Script file.
+ * v1.6: Failing Math / English / CTE come from CourseGrades, one row per course.
+ * Credit-recovery courses (HS_COURSE_OFFERINGS_IS_CR_COURSE = Yes) are not counted.
+ * Each failing line ends with the grade: "J Garcia, 11304174 — 37%"; CTE lines name
+ * the course first: "A Aguirre, 9487734 — CS CAR017A Bus Marketing Expl CA 45%".
+ * Snapshots no longer add a cell note.
+ * v1.7: chronic-absence lines end with days needed and last activity:
+ * "J Garcia, 11304174 — needs 4, active 10/5". The List of Students Chronically
+ * Absent cell gets a note with each student's full attendance details.
+ * v1.8: no dash before the details ("J Garcia, 11304174 59%"), and CTE course
+ * titles are shortened ("CAR015A Arts, AV, Comm, Principles" -> "Arts AV Comm").
+ * Add any title you want written differently to COURSE_SHORT.
+ * v1.9: Failing Math / English use Upstream MATH_PASSING_FLAG / ELA_PASSING_FLAG
+ * (0 = failing) and show MATH_GRADE / ELA_GRADE. Failing CTE still comes from
+ * CourseGrades, skipping credit-recovery courses.
  * @NotOnlyCurrentDoc
  * Requires Config.gs. Menus are built by Menus.gs.
  * v1.2: Failing Math / English / CTE cells hold the count, then one student per
@@ -23,7 +37,30 @@ const HR10WIG = (() => {
   const LIST_HEADERS = ['List of Students Chronically Absent', 'Failing Math', 'Failing English', 'Failing CTE Courses'];
   // Text colors for a student appearing in 2, 3 or 4 list cells: violet, pumpkin, red.
   const REPEAT_COLORS = {2: '#8E24AA', 3: '#E06C00', 4: '#CC0000'};
-  const STUDENT_LINE = /^.+, \d+$/; // A Aguirre, 9487734
+  // A Aguirre, 9487734   or   A Aguirre, 9487734 45%   (group 1 is the student key).
+  // Older weeks written as "A Aguirre, 9487734 — 45%" still match.
+  const STUDENT_LINE = /^(.+?, \d+)(?:\s.*)?$/;
+  // Exact course titles -> what to show. Checked before the automatic shortening.
+  const COURSE_SHORT = {
+    // 'CS CAR017A Bus Marketing Expl CA': 'Bus Marketing',
+  };
+  const COURSE_WORDS = [[/\bBusiness\b/g, 'Bus'], [/\bManagement\b/g, 'Mgmt'], [/\bTechnology\b/g, 'Tech'],
+    [/\bInformation\b/g, 'Info'], [/\band\b/g, '&']];
+  /** "CAR015A Arts, AV, Comm, Principles" -> "Arts AV Comm"; "CS CAR019A PBL Healthcare Expl CA" -> "PBL Healthcare". */
+  function shortCourse(title) {
+    const full = HR10CFG.normalize(title);
+    if (COURSE_SHORT[full]) return COURSE_SHORT[full];
+    let s = full.replace(/^CS\s+/i, '')                       // district prefix
+      .replace(/^[A-Z]{2,4}\d{2,4}[A-Z]{0,3}\d?\s+/, '')       // course code (CAR015A, SCI330A)
+      .replace(/\s+(CA|CR)$/, '')                               // trailing program tag
+      .replace(/,/g, ' ')
+      .replace(/\b(Principles of|Principles|Introduction to|Intro to|Exploration|Expl)\b/gi, ' ')
+      .replace(/\s+[AB]$/, '');                                 // semester segment
+    COURSE_WORDS.forEach(([pattern, word]) => { s = s.replace(pattern, word); });
+    s = s.replace(/\s+/g, ' ').trim();
+    return s || full;
+  }
+  const lineKey = line => { const m = String(line).trim().match(STUDENT_LINE); return m ? m[1] : ''; };
   // Failing cells only: count line size, student line size.
   const SIZED_HEADERS = ['Failing Math', 'Failing English', 'Failing CTE Courses'];
   const COUNT_FONT_SIZE = 10, NAME_FONT_SIZE = 7;
@@ -40,6 +77,49 @@ const HR10WIG = (() => {
     if (blank(v) || typeof v === 'boolean') return null;
     const n = Number(v);
     return Number.isSafeInteger(n) && n >= 0 ? n : null;
+  }
+  /** Short date "10/5" from a Sheets date or M/D/YYYY / YYYY-MM-DD text; '' if blank. */
+  function shortDate(v, tz) {
+    if (v instanceof Date && !isNaN(v.getTime())) return Utilities.formatDate(v, tz, 'M/d');
+    const s = text(v);
+    let m = s.match(/^(\d{1,2})\/(\d{1,2})(?:\/\d{2,4})?$/);
+    if (m) return +m[1] + '/' + +m[2];
+    m = s.match(/^\d{4}-(\d{1,2})-(\d{1,2})/);
+    return m ? +m[1] + '/' + +m[2] : s;
+  }
+  const num = v => blank(v) || typeof v === 'boolean' || !Number.isFinite(Number(v)) ? null : Number(v);
+  /** Chronic-absence line detail and full note for one student. get(header) reads Upstream. */
+  function attendance(student, get, tz) {
+    const needs = num(get('DAYS_NEEDED_TO_BECOME_COMPLIANT'));
+    const active = shortDate(get('DAR_MOST_RECENT_ACTIVITY_DATE'), tz);
+    const detail = [needs === null ? '' : 'needs ' + needs, active ? 'active ' + active : ''].filter(Boolean).join(', ');
+    const pct = num(get('PAR_ATTENDANCE_PCT')), present = num(get('PRESENT_DAYS')), enrolled = num(get('ENROLLED_DAYS'));
+    const absent = num(get('TOTAL_ABSENT_DAYS')) ?? num(get('ABSENT_DAYS')), excused = num(get('EXCUSED_DAYS'));
+    const last5 = num(get('MISSING_LAST_5_SCHOOL_DAYS')), prev5 = num(get('MISSING_5_TO_10_SCHOOL_DAYS_AGO'));
+    const lessons = num(get('DAR_TOTAL_LESSONS_ATTEMPTED_LAST_5_DAYS'));
+    const lines = [student.label];
+    if (pct !== null) lines.push('Attendance ' + pct + '%' + (present !== null && enrolled !== null ? ' (' + present + ' of ' + enrolled + ' days)' : ''));
+    if (absent !== null) lines.push('Absent ' + absent + (excused !== null ? ' (' + excused + ' excused)' : ''));
+    if (last5 !== null || prev5 !== null) lines.push('Missed last 5 days: ' + (last5 ?? '?') + '; 5–10 days ago: ' + (prev5 ?? '?'));
+    if (!blank(get('MISSING_ATTENDANCE_DATES'))) lines.push('Missing dates: ' + text(get('MISSING_ATTENDANCE_DATES')));
+    if (needs !== null) lines.push('Needs ' + needs + (needs === 1 ? ' day' : ' days') + ' to become compliant');
+    if (active || lessons !== null) lines.push('Last activity ' + (active || '?') + (lessons !== null ? '; lessons attempted last 5 days: ' + lessons : ''));
+    for (const n of ['NC1', 'NC2']) {
+      const date = shortDate(get(n + '_MOST_RECENT'), tz), count = num(get(n + '_NUMBEROFLETTERS'));
+      if (date || count) lines.push(n + ' letter ' + (date || '?') + (count ? ' (' + count + ' sent)' : ''));
+    }
+    const ge = shortDate(get('GE_CONNECTION_CALL'), tz), due = shortDate(get('GE_NEXT_CALL_DUE'), tz);
+    if (ge || due) lines.push('GE connection ' + (ge || '?') + (due ? '; next call due ' + due : ''));
+    return {student, detail, note: lines.join('\n')};
+  }
+  /** Course grade as "37%": posted grade, else unposted; '' if neither is a number. */
+  function percent(posted, unposted) {
+    for (const v of [posted, unposted]) {
+      if (blank(v) || typeof v === 'boolean') continue;
+      const n = Number(v);
+      if (Number.isFinite(n)) return Math.round(n) + '%';
+    }
+    return '';
   }
   function workbook() {
     return HR10CFG.workbook(SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(HR10CFG.ID));
@@ -102,11 +182,9 @@ const HR10WIG = (() => {
   function source(ss) {
     const ssSource = HR10CFG.sourceWorkbook(ss);
     const u = table(ssSource.getSheetByName('Upstream'), ['STUDENT_NUMBER', 'CURRENT_ACTIVE_STUDENT',
-      'PAR_CHRONICALLY_ABSENT', 'MATH_FAILING', 'MATH_CLASSES', 'ELA_FAILING', 'ELA_CLASSES']);
-    const c = table(ssSource.getSheetByName('CourseGrades'), ['STUDENT_IDENTITY_ID', 'CANVAS_PASSING_FLAG']);
-    if (!c.columns.has('HS_COURSE_OFFERINGS_IS_CTE_COURSE') && !c.columns.has('HS_COURSE_OFFERINGS_CONTENT_CATEGORY')) {
-      throw new Error('CourseGrades needs a CTE classification header.');
-    }
+      'PAR_CHRONICALLY_ABSENT', 'MATH_GRADE', 'MATH_PASSING_FLAG', 'ELA_GRADE', 'ELA_PASSING_FLAG']);
+    const c = table(ssSource.getSheetByName('CourseGrades'), ['STUDENT_IDENTITY_ID', 'CANVAS_PASSING_FLAG',
+      'COURSE_NAME', 'HS_COURSE_OFFERINGS_CONTENT_CATEGORY', 'HS_COURSE_OFFERINGS_IS_CR_COURSE']);
     const upstream = new Map(), courses = new Map();
     u.rows.forEach((row, i) => {
       const key = id(row[u.columns.get('STUDENT_NUMBER')]);
@@ -126,7 +204,7 @@ const HR10WIG = (() => {
       if (!courses.has(key)) courses.set(key, []);
       courses.get(key).push(row);
     });
-    return {u, c, upstream, courses};
+    return {u, c, upstream, courses, tz: ss.getSpreadsheetTimeZone()};
   }
   function calculate(students, data, week, row) {
     const issues = [], chronic = [], missing = [], inactive = [], details = new Map();
@@ -148,35 +226,40 @@ const HR10WIG = (() => {
         }
         const absent = bool(get('PAR_CHRONICALLY_ABSENT'));
         if (absent === null) issue(label, 'chronic-absence flag is missing/invalid');
-        else if (absent) chronic.push(student);
+        else if (absent) chronic.push(attendance(student, get, data.tz));
         for (const [prefix, title] of [['MATH', 'Math'], ['ELA', 'English']]) {
-          const raw = get(prefix + '_FAILING'), count = number(raw), classes = number(get(prefix + '_CLASSES'));
-          if (count !== null) {
-            if (count > 0) failing[prefix].push(student);
-          } else if (!blank(raw) || classes !== 0) issue(label, title + ' failing count is missing/invalid');
-          // Blank failing count with explicit zero classes means not enrolled.
+          const passing = bool(get(prefix + '_PASSING_FLAG'));
+          if (passing === false) failing[prefix].push({student, detail: percent(get(prefix + '_GRADE'))});
+          else if (passing === null && number(get(prefix + '_CLASSES')) !== 0) issue(label, title + ' passing flag is missing/invalid');
+          // A blank flag with zero classes means the student is not enrolled in that subject.
         }
       }
       const rows = data.courses.get(key);
-      if (!rows?.length) { issue(label, 'no CourseGrades rows; CTE coverage cannot be verified'); continue; }
-      let fails = false, unknown = false;
+      if (!rows?.length) { issue(label, 'no CourseGrades rows; CTE cannot be verified'); continue; }
+      const fails = {CTE: []}, unknown = new Set();
       rows.forEach(course => {
         const get = h => data.c.columns.has(h) ? course[data.c.columns.get(h)] : '';
-        const flag = bool(get('HS_COURSE_OFFERINGS_IS_CTE_COURSE'));
+        if (bool(get('HS_COURSE_OFFERINGS_IS_CR_COURSE')) === true) return; // Credit recovery is not counted.
         const category = text(get('HS_COURSE_OFFERINGS_CONTENT_CATEGORY')).toLowerCase();
-        const cte = flag === true || category === 'cte courses';
-        if (!cte) { if (flag === null && !category) unknown = true; return; }
+        const cteFlag = bool(get('HS_COURSE_OFFERINGS_IS_CTE_COURSE'));
+        const bucket = cteFlag === true || category === 'cte courses' ? 'CTE' : '';
+        if (!bucket) return;
         const passing = bool(get('CANVAS_PASSING_FLAG'));
-        if (passing === false) fails = true;
-        else if (passing === null) unknown = true;
+        if (passing === null) { unknown.add(bucket); return; }
+        if (passing) return;
+        fails[bucket].push({course: text(get('COURSE_NAME')),
+          pct: percent(get('CANVAS_POSTED_COURSE_GRADE'), get('CANVAS_UNPOSTED_COURSE_GRADE'))});
       });
-      if (fails) failing.CTE.push(student); // Each student once, even with several failing CTE courses.
-      else if (unknown) issue(label, 'CTE classification/passing data is missing or invalid');
+      fails.CTE.length && failing.CTE.push({student, detail: fails.CTE.map(f => (shortCourse(f.course) + ' ' + f.pct).trim()).join('; ')});
+      if (unknown.size && !fails.CTE.length) issue(label, 'CTE passing data is missing');
     }
-    const sortedLabels = list => list.slice().sort((a, b) => a.last.localeCompare(b.last) ||
-      a.first.localeCompare(b.first) || a.label.localeCompare(b.label)).map(s => s.label);
+    const order = (a, b) => a.last.localeCompare(b.last) || a.first.localeCompare(b.first) || a.label.localeCompare(b.label);
+    const sortedLabels = list => list.slice().sort(order).map(s => s.label);
+    const sortedLines = list => list.slice().sort((a, b) => order(a.student, b.student))
+      .map(e => e.student.label + (e.detail ? ' ' + e.detail : ''));
     // Count stays in Chronically Absent; the list cell holds one student per line.
-    const list = sortedLabels(chronic).join('\n');
+    const list = sortedLines(chronic).join('\n');
+    const chronicNote = chronic.slice().sort((a, b) => order(a.student, b.student)).map(e => e.note).join('\n\n');
     if (list.length > 45000) throw new Error('The chronic-absence list is too long for one WIG cell.');
     const missingText = Array.from(details).sort(([a], [b]) => a.localeCompare(b))
       .map(([label, reasons]) => label + ': ' + reasons.join('; ')).join('\n');
@@ -184,13 +267,13 @@ const HR10WIG = (() => {
     // Count first, then one student per line inside the same cell. Zero stays a number.
     const failingCell = (list, title) => {
       if (!list.length) return 0;
-      const lines = sortedLabels(list);
+      const lines = sortedLines(list);
       const value = [String(list.length)].concat(lines).join('\n');
       if (value.length > 45000) throw new Error('The ' + title + ' student list is too long for one WIG cell.');
       return value;
     };
     return {week, row, ready: true, complete: issues.length === 0, students: students.size, matched, missing, inactive,
-      issues, missingText, missingDataStudents: details.size, labels: METRICS.slice(),
+      issues, missingText, missingDataStudents: details.size, labels: METRICS.slice(), chronicNote,
       values: [students.size, chronic.length, list, failingCell(failing.MATH, 'Failing Math'),
         failingCell(failing.ELA, 'Failing English'), failingCell(failing.CTE, 'Failing CTE')],
       failingCounts: [failing.MATH.length, failing.ELA.length, failing.CTE.length]};
@@ -198,11 +281,11 @@ const HR10WIG = (() => {
   /** How many of the given cell texts list each student line. */
   function repeatCounts(texts) {
     const counts = new Map();
-    texts.forEach(t => new Set(String(t).split('\n').map(line => line.trim()).filter(line => STUDENT_LINE.test(line)))
-      .forEach(line => counts.set(line, (counts.get(line) || 0) + 1)));
+    texts.forEach(t => new Set(String(t).split('\n').map(lineKey).filter(Boolean))
+      .forEach(key => counts.set(key, (counts.get(key) || 0) + 1)));
     return counts;
   }
-  function repeatColor(line, counts) { return REPEAT_COLORS[Math.min(counts.get(line.trim()) || 0, 4)] || ''; }
+  function repeatColor(line, counts) { return REPEAT_COLORS[Math.min(counts.get(lineKey(line)) || 0, 4)] || ''; }
   function richText(text, counts, sized) {
     const builder = SpreadsheetApp.newRichTextValue().setText(text);
     let offset = 0;
@@ -252,10 +335,6 @@ const HR10WIG = (() => {
   }
   function save(wig, report, ss) {
     const cells = METRICS.map((h, i) => ({column: wig.columns.get(h) + 1, value: report.values[i]})).sort((a, b) => a.column - b.column);
-    const note = 'WIG snapshot saved ' + Utilities.formatDate(new Date(), ss.getSpreadsheetTimeZone(), 'yyyy-MM-dd HH:mm:ss z') +
-      '. Week ' + report.week + '. Master roster ' + report.students + '; matched Upstream ' + report.matched +
-      '. Metrics read from Info!H2 Upstream/CourseGrades at snapshot time.' +
-      (report.complete ? ' Complete coverage.' : ' Known counts only; missing data for ' + report.missingDataStudents + ' students listed in column L.');
     const ops = [];
     for (let i = 0; i < cells.length;) {
       const first = cells[i], values = [first.value]; i++;
@@ -264,8 +343,7 @@ const HR10WIG = (() => {
       const before = range.getValues(), notes = range.getNotes();
       if (range.getFormulas()[0].some(Boolean) || before[0].some(v => !blank(v))) throw new Error('WIG snapshot cells changed during calculation; existing values were preserved.');
       ops.push({range, before, notes, values: HR10CFG.prepareValues(range, [values]),
-        wrap: values.some(v => typeof v === 'string' && v.includes('\n')),
-        afterNotes: [notes[0].map(n => n ? n + '\n\n' + note : note)]});
+        wrap: values.some(v => typeof v === 'string' && v.includes('\n'))});
     }
     const missingRange = wig.sheet.getRange(wig.row, MISSING_COLUMN);
     if (missingRange.getFormula()) throw new Error('WIG column L contains a formula on the target row; preserve it by moving it before saving.');
@@ -273,23 +351,27 @@ const HR10WIG = (() => {
     const existing = blank(before[0][0]) ? '' : String(before[0][0]);
     const missingValue = existing + (existing && report.missingText ? '\n\n' : '') + report.missingText;
     if (missingValue.length > 45000) throw new Error('WIG column L text is too long; snapshot was not changed.');
-    ops.push({range: missingRange, before, notes, values: HR10CFG.prepareValues(missingRange, [[missingValue]]), wrap: false,
-      afterNotes: [[notes[0][0] ? notes[0][0] + '\n\n' + note : note]]});
+    ops.push({range: missingRange, before, notes, values: HR10CFG.prepareValues(missingRange, [[missingValue]]), wrap: false});
+    const noteRange = wig.sheet.getRange(wig.row, wig.columns.get('List of Students Chronically Absent') + 1);
+    if (report.chronicNote.length > 45000) throw new Error('The chronic-absence note is too long; snapshot was not changed.');
+    ops.push({range: noteRange, noteOnly: true, notes: noteRange.getNotes(), afterNotes: [[report.chronicNote]]});
     const attempted = [];
     try {
       ops.forEach(op => {
-        attempted.push(op); op.range.setValues(op.values); op.range.setNotes(op.afterNotes);
+        attempted.push(op);
+        if (op.noteOnly) { op.range.setNotes(op.afterNotes); return; }
+        op.range.setValues(op.values);
         if (op.wrap) op.range.setWrap(true).setVerticalAlignment('top'); // Keep each student on its own line.
       });
       SpreadsheetApp.flush();
     } catch (e) {
       const errors = [];
       attempted.reverse().forEach(op => {
+        if (op.noteOnly) { try { op.range.setNotes(op.notes); } catch (x) { errors.push(x.message); } return; }
         try { op.range.setValues(HR10CFG.prepareValues(op.range, op.before)); } catch (x) { errors.push(x.message); }
-        try { op.range.setNotes(op.notes); } catch (x) { errors.push(x.message); }
       });
       try { SpreadsheetApp.flush(); } catch (x) { errors.push(x.message); }
-      throw new Error('WIG snapshot failed: ' + e.message + (errors.length ? '. Restoration failed; review WIG row ' + wig.row + '.' : '. Snapshot cells and notes were restored.'));
+      throw new Error('WIG snapshot failed: ' + e.message + (errors.length ? '. Restoration failed; review WIG row ' + wig.row + '.' : '. Snapshot cells were restored.'));
     }
     // Coloring is cosmetic: a failure here keeps the saved snapshot.
     try { colorRow(wig.sheet, wig.columns, wig.row); SpreadsheetApp.flush(); }
@@ -315,6 +397,7 @@ const HR10WIG = (() => {
         }).join('\n');
       html += '<table border="1" cellpadding="6" style="border-collapse:collapse">' + report.labels.map((h, i) => '<tr><th>' + esc(h) + '</th><td style="white-space:pre-wrap">' + cellHtml(report.values[i], i) + '</td></tr>').join('') + '</table>';
       html += '<p>Repeats across the four lists: <b style="color:' + REPEAT_COLORS[2] + '">2 lists</b>, <b style="color:' + REPEAT_COLORS[3] + '">3 lists</b>, <b style="color:' + REPEAT_COLORS[4] + '">4 lists</b>.</p>';
+      if (report.chronicNote) html += '<p>Note on List of Students Chronically Absent:</p><pre style="white-space:pre-wrap">' + esc(report.chronicNote) + '</pre>';
       html += '<p>Column L: ' + (report.missingText ? '</p><pre style="white-space:pre-wrap">' + esc(report.missingText) + '</pre>' : 'No missing students/data.</p>');
     }
     SpreadsheetApp.getUi().showModalDialog(HtmlService.createHtmlOutput(html + '</div>').setWidth(850).setHeight(600), title);

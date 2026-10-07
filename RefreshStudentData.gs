@@ -1,6 +1,6 @@
-/** 10RosterHR source refresh v1.2. Replace the old RefreshStudentData file.
+/** 10RosterHR source refresh v1.3 (SPED from IEP or 504; remove missing students from the report). Replace the old RefreshStudentData file.
  * @NotOnlyCurrentDoc
- * Requires Config.gs and RosterSync v1.3. Menus are built by Menus.gs. Info!H2 holds the separate imports workbook URL.
+ * Requires Config.gs, RosterSync v1.3 and RemoveStudents.gs. Menus are built by Menus.gs. Info!H2 holds the separate imports workbook URL.
  * Source is READ ONLY. Planner performs no writes; shared helper saves everything.
  */
 const HR10REFRESH = (() => {
@@ -35,7 +35,7 @@ const HR10REFRESH = (() => {
       const active = ['Y', 'YES', 'TRUE', '1'].includes(text(row[u.columns.get('CURRENT_ACTIVE_STUDENT')]).toUpperCase());
       students.set(key, {row, active});
     });
-    return {u, p, students};
+    return {u, p, students, book: upstream};
   }
   function date(v, label) {
     if (v instanceof Date && !isNaN(v.getTime())) return new Date(v.getTime());
@@ -218,6 +218,14 @@ const HR10REFRESH = (() => {
       MAP.forEach(([src, dest]) => {
         if (!data.u.columns.has(src)) return;
         let value = student.row[data.u.columns.get(src)];
+        if (dest === 'SPED') {
+          // SPED = Yes if the student has an IEP (STUDENT_WITH_DISABILITIES) or a 504 plan (SPED504PLAN).
+          const yes = v => ['Y', 'YES', 'TRUE', '1'].includes(text(v).toUpperCase());
+          const swdCol = data.u.columns.get('STUDENT_WITH_DISABILITIES');
+          const swd = swdCol === undefined ? '' : student.row[swdCol];
+          if (yes(swd) || yes(value)) value = 'Yes';
+          else if (blank(value) && !blank(swd)) value = 'No';
+        }
         if (blank(value)) { report.issues.push(key + ': blank source ' + src + '; existing value retained.'); return; }
         if (dest === 'START DATE') value = date(value, key + ' START DATE');
         add(key, r, dest, value);
@@ -254,14 +262,15 @@ const HR10REFRESH = (() => {
     report.contacts.forEach(x => x.changes.forEach(c => {
       html += '<tr><td>' + esc(x.studentNumber + ' / Contacts row ' + x.row + (x.added ? ' (new)' : '')) + '</td><td>' + esc(c.field) + '</td><td>' + esc(c.before) + '</td><td>' + esc(c.after) + '</td></tr>';
     }));
-    html += '</table><h3>Missing information and review notes</h3><ul>' + report.issues.map(x => '<li>' + esc(x) + '</li>').join('') + '</ul></div>';
+    html += '</table>' + HR10REMOVE.section(report.missingDetails || []);
+    html += '<h3>Missing information and review notes</h3><ul>' + report.issues.map(x => '<li>' + esc(x) + '</li>').join('') + '</ul></div>';
     SpreadsheetApp.getUi().showModalDialog(HtmlService.createHtmlOutput(html).setWidth(950).setHeight(650), title);
   }
   function run(preview) {
     const ss = book();
-    let report;
+    let report, data;
     try {
-      const data = source(ss);
+      data = source(ss);
       update10RosterFields(master => {
         const result = build(ss, master, data);
         report = result.report;
@@ -275,6 +284,8 @@ const HR10REFRESH = (() => {
     }
     if (!preview) HR10CFG.log('SUCCESS', 'RefreshStudentData', '',
       report.changes.length + ' Master fields; ' + report.contacts.length + ' contact rows refreshed.', '');
+    try { report.missingDetails = HR10REMOVE.details(ss, report.missing, data.book); }
+    catch (e) { report.issues.push('AddDrop details unavailable: ' + e.message); report.missingDetails = []; }
     console.log(JSON.stringify(report));
     try { display(report, preview ? 'Student refresh preview — no data saved' : 'Student refresh saved'); }
     catch (e) { console.error('Refresh report could not be displayed: ' + e.message); }
