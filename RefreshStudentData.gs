@@ -1,6 +1,8 @@
-/** 10RosterHR source refresh v1.3 (SPED from IEP or 504; remove missing students from the report). Replace the old RefreshStudentData file.
+/** 10RosterHR source refresh v1.4 (also imports course grades into the Grades tab). Replace the old RefreshStudentData file.
  * @NotOnlyCurrentDoc
- * Requires Config.gs, RosterSync v1.3 and RemoveStudents.gs. Menus are built by Menus.gs. Info!H2 holds the separate imports workbook URL.
+ * Requires Config.gs, RosterSync v1.3, RemoveStudents.gs and GradesImport.gs.
+ * Grades are imported after Master is saved, under their own lock; a Grades
+ * problem is reported in the dialog and never undoes the Master refresh. Menus are built by Menus.gs. Info!H2 holds the separate imports workbook URL.
  * Source is READ ONLY. Planner performs no writes; shared helper saves everything.
  */
 const HR10REFRESH = (() => {
@@ -262,7 +264,18 @@ const HR10REFRESH = (() => {
     report.contacts.forEach(x => x.changes.forEach(c => {
       html += '<tr><td>' + esc(x.studentNumber + ' / Contacts row ' + x.row + (x.added ? ' (new)' : '')) + '</td><td>' + esc(c.field) + '</td><td>' + esc(c.before) + '</td><td>' + esc(c.after) + '</td></tr>';
     }));
-    html += '</table>' + HR10REMOVE.section(report.missingDetails || []);
+    html += '</table>';
+    const g = report.grades;
+    if (g) {
+      html += '<h3>Grades tab</h3><p>' + esc(g.studentsUpdated) + ' students with grade changes; ' + esc(g.added.length) +
+        ' rows added' + (g.importDate ? '; CourseGrades import date ' + esc(g.importDate) : '') + '.</p>';
+      if (g.changes.length) {
+        html += '<table border="1" cellpadding="5" style="border-collapse:collapse"><tr><th>Student / row</th><th>Column</th><th>Before</th><th>After</th></tr>';
+        g.changes.forEach(x => { html += '<tr><td>' + esc(x.studentNumber + ' / Grades row ' + x.row) + '</td><td>' + esc(x.field) + '</td><td>' + esc(x.before) + '</td><td>' + esc(x.after) + '</td></tr>'; });
+        html += '</table>';
+      }
+    }
+    html += HR10REMOVE.section(report.missingDetails || []);
     html += '<h3>Missing information and review notes</h3><ul>' + report.issues.map(x => '<li>' + esc(x) + '</li>').join('') + '</ul></div>';
     SpreadsheetApp.getUi().showModalDialog(HtmlService.createHtmlOutput(html).setWidth(950).setHeight(650), title);
   }
@@ -284,6 +297,14 @@ const HR10REFRESH = (() => {
     }
     if (!preview) HR10CFG.log('SUCCESS', 'RefreshStudentData', '',
       report.changes.length + ' Master fields; ' + report.contacts.length + ' contact rows refreshed.', '');
+    try {
+      report.grades = HR10GRADEIMPORT.run(ss, data.book, preview);
+      report.grades.issues.forEach(x => report.issues.push('Grades: ' + x));
+      if (!preview) HR10CFG.log('SUCCESS', 'GradesImport', '', report.grades.changes.length + ' Grades cells changed.', '');
+    } catch (e) {
+      report.issues.push('Grades import stopped' + (preview ? '' : '; check the Grades tab') + ': ' + e.message);
+      if (!preview) HR10CFG.log('ERROR', 'GradesImport', '', e.message, HR10CFG.errorDetails(e));
+    }
     try { report.missingDetails = HR10REMOVE.details(ss, report.missing, data.book); }
     catch (e) { report.issues.push('AddDrop details unavailable: ' + e.message); report.missingDetails = []; }
     console.log(JSON.stringify(report));

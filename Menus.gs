@@ -1,4 +1,6 @@
-/** All 10RosterHR menus (v2.0). Requires Config.gs.
+/** All 10RosterHR menus (v2.1). Requires Config.gs.
+ * v2.1: one top-level Update menu with submenus; the two ECC
+ * "archive & open PowerSchool" actions are repeated at the top for quick access.
  * onOpen is a simple trigger: it runs for every editor who opens the file, with
  * no install step and no per-person trigger. It only builds menus.
  * This must be the only onOpen function in the project.
@@ -12,40 +14,53 @@ function onOpen() { build10Menus_(); }
 
 function build10Menus_() {
   const ui = SpreadsheetApp.getUi();
-  ui.createMenu('Call Tools')
-    .addItem('Open student demographics', 'openStudentDemographics')
-    .addSeparator()
-    .addItem('Save / archive Call to rosters', 'saveSccToRoster')
-    .addItem('Log SCC success / failed attempt in PowerSchool', 'logSccInPowerSchool')
-    .addItem('Save Call & open PowerSchool', 'archiveSccAndOpenPowerSchool')
-    .addItem('Reset Call form', 'resetCallEntry')
-    .addSeparator()
-    .addItem('Check roster sync', 'check10RosterSync')
-    .addToUi();
-  ui.createMenu('ECC Tools')
-    .addItem('Archive current conversation', 'archiveCurrentECCNote')
+
+  ui.createMenu('Update')
+    // Frequently used quick-access actions
     .addItem('Archive conversation & open PowerSchool', 'logCurrentEccRowAndOpenPowerSchool')
-    .addSeparator()
-    .addItem('Archive student contact attempt', 'archiveCurrentECCAttempt')
     .addItem('Archive attempt & open PowerSchool', 'logCurrentEccAttemptAndOpenPowerSchool')
     .addSeparator()
-    .addItem('Refresh ECC Date colors', 'applyEccDateColors')
-    .addToUi();
-  ui.createMenu('Student refresh')
-    .addItem('Preview source changes', 'preview10StudentRefresh')
-    .addItem('Refresh existing students and contacts', 'refreshStudentData')
-    .addToUi();
-  ui.createMenu('Grade Reports')
-    .addItem('Preview grade report photos', 'preview10GradeReportPhotos')
-    .addItem('Import grade report photos', 'import10GradeReportPhotos')
-    .addToUi();
-  ui.createMenu('WIG Tools')
-    .addItem('Preview this week\u2019s snapshot', 'previewWigSnapshot')
-    .addItem('Save this week\u2019s snapshot', 'saveWigSnapshot')
-    .addItem('Reformat student lists', 'recolorWigStudentRepeats')
-    .addSeparator()
-    .addItem('Enable Tuesday 4 PM snapshots', 'enableTuesdayWigSnapshots')
-    .addItem('Disable my Tuesday snapshots', 'disableTuesdayWigSnapshots')
+    // Submenus
+    .addSubMenu(
+      ui.createMenu('Call Tools')
+        .addItem('Open student demographics', 'openStudentDemographics')
+        .addSeparator()
+        .addItem('Save / archive Call to rosters', 'saveSccToRoster')
+        .addItem('Log SCC success / failed attempt in PowerSchool', 'logSccInPowerSchool')
+        .addItem('Save Call & open PowerSchool', 'archiveSccAndOpenPowerSchool')
+        .addItem('Reset Call form', 'resetCallEntry')
+        .addSeparator()
+        .addItem('Check roster sync', 'check10RosterSync')
+    )
+    .addSubMenu(
+      ui.createMenu('ECC Tools')
+        .addItem('Archive current conversation', 'archiveCurrentECCNote')
+        .addItem('Archive conversation & open PowerSchool', 'logCurrentEccRowAndOpenPowerSchool')
+        .addSeparator()
+        .addItem('Archive student contact attempt', 'archiveCurrentECCAttempt')
+        .addItem('Archive attempt & open PowerSchool', 'logCurrentEccAttemptAndOpenPowerSchool')
+        .addSeparator()
+        .addItem('Refresh ECC Date colors', 'applyEccDateColors')
+    )
+    .addSubMenu(
+      ui.createMenu('Student Refresh')
+        .addItem('Preview source changes', 'preview10StudentRefresh')
+        .addItem('Refresh existing students, contacts and grades', 'refreshStudentData')
+    )
+    .addSubMenu(
+      ui.createMenu('Grade Reports')
+        .addItem('Preview grade report photos', 'preview10GradeReportPhotos')
+        .addItem('Import grade report photos', 'import10GradeReportPhotos')
+    )
+    .addSubMenu(
+      ui.createMenu('WIG Tools')
+        .addItem('Preview this week\u2019s snapshot', 'previewWigSnapshot')
+        .addItem('Save this week\u2019s snapshot', 'saveWigSnapshot')
+        .addItem('Reformat student lists', 'recolorWigStudentRepeats')
+        .addSeparator()
+        .addItem('Enable Tuesday 4 PM snapshots', 'enableTuesdayWigSnapshots')
+        .addItem('Disable my Tuesday snapshots', 'disableTuesdayWigSnapshots')
+    )
     .addToUi();
 }
 
@@ -84,6 +99,7 @@ function install10RosterTools() {
   ss.toast('Menus ready' + (removed ? '; removed ' + removed + ' old menu triggers' : '') +
     '. Student data was not changed.', 'Roster tools', 8);
 }
+
 // Old install names now all run the single install.
 function install10CallTools() { return install10RosterTools(); }
 function install10EccTools() { return install10RosterTools(); }
