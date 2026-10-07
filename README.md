@@ -1,2 +1,35 @@
 # Call_Log_5
 Homeroom Automations v5
+
+## Grade report photos
+
+Add `GradeReportPhotos.gs` to the **bound Apps Script project for 10RosterHR**
+and replace `Menus.gs` with this version. Keep `Config.gs` and the other files.
+Reload the spreadsheet to see the **Grade Reports** menu.
+
+Choose **Import grade report photos**, paste the week's Drive folder link, and
+enter **Z** for Week 7 (the existing header is `Week 7 of 10/5`). Approve Google's
+Drive/Sheets authorization when first requested. The script needs read access to
+the folder and edit access to the spreadsheet. GitHub updates alone do not deploy
+code into the bound Apps Script project.
+
+- When Grades has only headers, it copies student details from Master into A:F.
+  It retains existing rows and course data on subsequent imports.
+- It matches the filename's name against each student's preferred and legal
+  names, including multipart names. The Canvas number before `_question_` is
+  **not** treated as the roster Student Number. Ambiguous names, duplicate photos,
+  unmatched files, unsupported types, and images over 2 MB are reported/skipped.
+- PNG, JPEG, and GIF files are embedded directly from private Drive blobs as
+  **images over cells**, anchored in the weekly column, with aspect ratio retained.
+  The photo column is 420 pixels wide; matched rows are at least 240 pixels high.
+  Existing cell text, hyperlinks, notes, and formulas are retained. Original-photo
+  links appear in the import/preview report.
+- Repeating an import does not duplicate the script's images. New files replace
+  only images this tool previously created for that student in that column.
+  Missing photos do not clear prior photos. Manually inserted images are retained.
+- Use **Preview grade report photos** to see matches without modifying the sheet.
+  This is a menu-driven import, not a scheduled task. Next week, paste the new
+  folder and choose its weekly column. Folder IDs remain in document properties;
+  no student data or private folder links belong in this public repository.
+
+Run the local matching/import-behavior tests with `node --test tests/grade-report-photos.test.cjs`.
