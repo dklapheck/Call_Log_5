@@ -1,4 +1,4 @@
-/** Grade report photos for 10RosterHR. Requires Config.gs; menus in Menus.gs.
+/** Grade report photos v1.1 (thumbnail fallback). Requires Config.gs; menus in Menus.gs.
  * @NotOnlyCurrentDoc
  * Reads private Drive blobs; embeds over-grid images anchored in the chosen
  * weekly column. No public URLs or sharing changes are needed.
@@ -63,7 +63,6 @@ const HR10GRADES = (() => {
     const candidates = new Map(), issues = [];
     files.forEach(file => {
       if (!MIME_TYPES.includes(file.mime)) { issues.push(file.name + ': unsupported image type; skipped.'); return; }
-      if (file.size > MAX_BYTES) { issues.push(file.name + ': exceeds the 2 MB image limit; skipped.'); return; }
       const matches = [...(aliases.get(photoName(file.name)) || [])];
       if (matches.length !== 1) {
         issues.push(file.name + ': ' + (matches.length ? 'ambiguous name' : 'no matching student') + '; skipped.'); return;
@@ -110,27 +109,51 @@ const HR10GRADES = (() => {
     const title = PREFIX + student.id;
     return sheet.getImages().filter(image => image.getAltTextTitle() === title && image.getAnchorCell().getColumn() === column);
   }
+  function thumbnailBlob(file) {
+    const blob = file.driveFile.getThumbnail();
+    if (!blob) throw new Error('Drive has no thumbnail for this photo. Resize a copy and retry.');
+    if (blob.getBytes().length > MAX_BYTES) throw new Error('Drive thumbnail also exceeds 2 MB. Resize a copy and retry.');
+    return blob;
+  }
+  function insertPhoto(sheet, file, blob, column, row, thumbnail) {
+    try {
+      return {image: sheet.insertImage(blob, column, row, PADDING, PADDING), thumbnail};
+    } catch (error) {
+      // Retry only insertion size/pixel-limit failures, not permission or
+      // unrelated service errors. The old image remains until the new one fits.
+      if (thumbnail || !/blob.*too large|maximum.*(?:blob size|number of pixels)|image.*too large/i.test(error.message)) throw error;
+      const preview = thumbnailBlob(file);
+      try { return {image: sheet.insertImage(preview, column, row, PADDING, PADDING), thumbnail: true}; }
+      catch (previewError) { throw new Error('Original exceeds image limits; thumbnail insertion failed: ' + previewError.message); }
+    }
+  }
   function applyPlan(plan) {
     const {sheet, options} = plan;
-    const result = {inserted: 0, unchanged: 0, issues: plan.issues.slice(), missing: plan.missing.map(s => s.name)};
+    const result = {inserted: 0, unchanged: 0, thumbnails: [], issues: plan.issues.slice(), missing: plan.missing.map(s => s.name)};
     if (!plan.matches.length) return result;
     // Fetch every blob before changing the sheet. Authorization/download errors
     // cannot leave a newly seeded roster without any photos.
-    plan.matches.forEach(m => { m.blob = m.file.driveFile.getBlob(); });
+    plan.matches.forEach(m => {
+      m.thumbnail = m.file.size > MAX_BYTES;
+      m.blob = m.thumbnail ? thumbnailBlob(m.file) : m.file.driveFile.getBlob();
+    });
     if (plan.seed) {
       if (plan.students.length + 1 > sheet.getMaxRows()) sheet.insertRowsAfter(sheet.getMaxRows(), plan.students.length + 1 - sheet.getMaxRows());
       const range = sheet.getRange(2, 1, plan.students.length, 6);
       range.setValues(HR10CFG.prepareValues(range, plan.students.map(s => s.values)));
     }
     sheet.setColumnWidth(options.column, WIDTH);
-    plan.matches.forEach(({student, file, blob}) => {
+    plan.matches.forEach(({student, file, blob, thumbnail}) => {
       const old = ownedImages(sheet, student, options.column);
       const description = 'Drive file: ' + file.id + '; updated: ' + file.updated;
-      const current = old.length === 1 && old[0].getAltTextDescription() === description ? old[0] : null;
+      const previewDescription = description + '; preview: thumbnail';
+      const current = old.length === 1 && [description, previewDescription].includes(old[0].getAltTextDescription()) ? old[0] : null;
       let image;
       try {
-        image = current || sheet.insertImage(blob, options.column, student.row, PADDING, PADDING);
-        image.setAltTextTitle(PREFIX + student.id).setAltTextDescription(description);
+        const inserted = current ? {image: current, thumbnail: current.getAltTextDescription() === previewDescription} :
+          insertPhoto(sheet, file, blob, options.column, student.row, thumbnail);
+        image = inserted.image;
+        image.setAltTextTitle(PREFIX + student.id).setAltTextDescription(inserted.thumbnail ? previewDescription : description);
         const scale = Math.min((WIDTH - 2 * PADDING) / image.getInherentWidth(), (HEIGHT - 2 * PADDING) / image.getInherentHeight(), 1);
         image.setWidth(Math.max(1, Math.round(image.getInherentWidth() * scale)))
           .setHeight(Math.max(1, Math.round(image.getInherentHeight() * scale)))
@@ -138,6 +161,7 @@ const HR10GRADES = (() => {
         sheet.setRowHeight(student.row, Math.max(HEIGHT, sheet.getRowHeight(student.row)));
         if (!current) old.forEach(previous => previous.remove());
         if (current) result.unchanged++; else result.inserted++;
+        if (inserted.thumbnail) result.thumbnails.push(student.name);
       } catch (error) {
         if (image && !current) image.remove(); // retain the previous photo on failure
         result.issues.push(student.name + ': image not imported: ' + error.message);
@@ -160,14 +184,16 @@ const HR10GRADES = (() => {
   function show(plan, result, preview) {
     const esc = HR10CFG.escapeHtml;
     const summary = preview ? plan.matches.length + ' matched photos; ' + (plan.seed ? plan.students.length + ' student rows will be copied from Master.' : 'existing student rows retained.') :
-      result.inserted + ' photos imported; ' + result.unchanged + ' already present.';
+      result.inserted + ' photos imported; ' + result.unchanged + ' already present. ' + result.thumbnails.length + ' thumbnail previews.';
     const issues = preview ? plan.issues : result.issues;
     const html = '<div style="font:14px Arial"><p>' + esc(summary) + '</p><p>Destination: Grades column ' +
       esc(HR10CFG.columnLetter(plan.options.column)) + ' (' + esc(plan.header) + ')</p><table border="1" cellpadding="5" style="border-collapse:collapse">' +
       '<tr><th>Student</th><th>Cell</th><th>Original photo</th></tr>' + plan.matches.map(m => '<tr><td>' + esc(m.student.name) +
         '</td><td>' + esc(HR10CFG.columnLetter(plan.options.column) + m.student.row) + '</td><td><a target="_blank" href="' +
         esc(m.file.driveFile.getUrl()) + '">Open report</a></td></tr>').join('') + '</table><p>Students without an imported photo: ' +
-      esc((preview ? plan.missing.map(s => s.name) : result.missing).join(', ') || 'None') + '</p><ul>' + issues.map(issue => '<li>' + esc(issue) + '</li>').join('') + '</ul></div>';
+      esc((preview ? plan.missing.map(s => s.name) : result.missing).join(', ') || 'None') + '</p>' +
+      (preview || !result.thumbnails.length ? '' : '<p>Thumbnail previews (use Open report for full-resolution text): ' +
+        esc(result.thumbnails.join(', ')) + '</p>') + '<ul>' + issues.map(issue => '<li>' + esc(issue) + '</li>').join('') + '</ul></div>';
     SpreadsheetApp.getUi().showModalDialog(HtmlService.createHtmlOutput(html).setWidth(850).setHeight(600), preview ? 'Grade photo preview — no changes' : 'Grade photos imported');
   }
   function run(preview) {
