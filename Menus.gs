@@ -35,6 +35,10 @@ function build10Menus_() {
     .addItem('Preview source changes', 'preview10StudentRefresh')
     .addItem('Refresh existing students and contacts', 'refreshStudentData')
     .addToUi();
+  ui.createMenu('Grade Reports')
+    .addItem('Preview grade report photos', 'preview10GradeReportPhotos')
+    .addItem('Import grade report photos', 'import10GradeReportPhotos')
+    .addToUi();
   ui.createMenu('WIG Tools')
     .addItem('Preview this week\u2019s snapshot', 'previewWigSnapshot')
     .addItem('Save this week\u2019s snapshot', 'saveWigSnapshot')
