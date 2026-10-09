@@ -1,20 +1,24 @@
-/** Grades tab import v1.0. Requires Config.gs. Called by RefreshStudentData.gs
- * (Student refresh menu) after Master is refreshed; it has no menu of its own.
- * Source: the CourseGrades tab of the imports workbook in Info!H2 (read only).
+/** Grades import v1.1 (X / X% headers; also fills the matching Master columns).
+ * Requires Config.gs. Called by RefreshStudentData.gs (Student refresh menu);
+ * it has no menu of its own. Source: the CourseGrades tab of the imports
+ * workbook in Info!H2 (read only).
  *
- * Grades layout (row 1): Preferred Name, Student Number, LAST NAME, FIRST NAME,
- * GRADE, START DATE, then course slots. A slot is any header followed by a
- * "Percentage" column:
- *   - a course code (2-4 capital letters, e.g. MTH, ENG, ORN, HST, ART) takes
- *     the course whose COURSE_NAME starts with that code (MTH208A Geometry CA);
- *   - "Course 1", "Course 2", ... take every other course, in name order.
- * Adding a new code slot (e.g. SCI + Percentage) needs no code change.
- * Columns that are not slots (Week 6, photo columns) are never written.
+ * Course slots are found by header name, on the Grades tab and on Master:
+ *   - a course code (2-4 capital letters, e.g. MTH, ENG, ORN, HST, ART) with a
+ *     matching "MTH%" column takes the course whose COURSE_NAME starts with that
+ *     code (MTH208A Geometry CA);
+ *   - "Course 1", "Course 2", ... with "Course 1%" ... take every other course,
+ *     in name order.
+ *   A slot's % column may also be a "Percentage" header right after it (old layout).
+ * Adding a new slot pair (e.g. SCI + SCI%) needs no code change. Columns that
+ * are not slots (Week 6, photo columns) are never written.
  *
- * Each refresh rewrites the course name and current Canvas percentage in every
- * slot for students found in CourseGrades. Students missing from CourseGrades
- * keep their previous grades. Master students missing from Grades are added at
- * the bottom; A:F follows Master. Grades rows not in Master are kept.
+ * Master (and so SCC, ECC, STAR through the roster sync) gets the same slots
+ * as part of the normal Master refresh. The Grades tab is written afterwards.
+ * Each refresh rewrites every slot for students found in CourseGrades, so
+ * dropped courses disappear. Students missing from CourseGrades keep their
+ * previous grades. Master students missing from Grades are added at the bottom
+ * of Grades; Grades A:F follows Master. Grades rows not in Master are kept.
  */
 const HR10GRADEIMPORT = (() => {
   const SOURCE_TAB = 'CourseGrades';
@@ -26,23 +30,48 @@ const HR10GRADEIMPORT = (() => {
   const blank = v => HR10CFG.blank(v);
   const same = (a, b) => HR10CFG.same(a, b);
 
-  /** Course slots from normalized row-1 headers (0-based column indexes). */
+  /** Course slots from normalized row-1 headers (0-based column indexes).
+   * from: first column that may hold a slot. Returns null if there are none. */
+  function findSlots(headers, from) {
+    const index = new Map();
+    headers.forEach((h, i) => { if (h && !index.has(h)) index.set(h, i); });
+    const named = new Map(), extra = [];
+    headers.forEach((h, i) => {
+      if (i < from || !h || h.endsWith('%') || h === 'Percentage') return;
+      const isCourse = /^Course \d+$/i.test(h), isCode = /^[A-Z]{2,4}$/.test(h);
+      if (!isCourse && !isCode) return;
+      let pct = index.get(h + '%');
+      if (pct === undefined && headers[i + 1] === 'Percentage') pct = i + 1;
+      if (pct === undefined) return;
+      const slot = {course: i, pct, label: h, pctLabel: headers[pct]};
+      if (isCourse) extra.push(slot);
+      else if (named.has(h)) throw new Error('Duplicate course column ' + h + '.');
+      else named.set(h, slot);
+    });
+    extra.sort((x, y) => Number(x.label.replace(/\D/g, '')) - Number(y.label.replace(/\D/g, '')));
+    if (!named.size && !extra.length) return null;
+    const all = [...named.values(), ...extra];
+    return {named, extra, all, last: Math.max(...all.map(t => Math.max(t.course, t.pct)))};
+  }
+
+  /** Grades tab slots: A:F must be the student fields. */
   function slots(headers) {
     ID_FIELDS.forEach((h, i) => {
       if (headers[i] !== h) throw new Error('Grades A:F headers must be: ' + ID_FIELDS.join(', ') + '.');
     });
-    const named = new Map(), extra = [];
-    headers.forEach((h, i) => {
-      if (i < ID_FIELDS.length || headers[i + 1] !== 'Percentage') return;
-      if (/^Course \d+$/i.test(h)) extra.push({course: i, pct: i + 1, label: h});
-      else if (/^[A-Z]{2,4}$/.test(h)) {
-        if (named.has(h)) throw new Error('Grades: duplicate course column ' + h + '.');
-        named.set(h, {course: i, pct: i + 1, label: h});
-      }
-    });
-    if (!named.size && !extra.length) throw new Error('Grades has no course columns (a header followed by Percentage).');
-    const all = [...named.values(), ...extra];
-    return {named, extra, all, last: Math.max(...all.map(s => s.pct))};
+    const layout = findSlots(headers, ID_FIELDS.length);
+    if (!layout) throw new Error('Grades has no course columns (e.g. MTH and MTH%).');
+    return layout;
+  }
+
+  /** Master field values for one student: [{header, value}] for every slot,
+   * or null when the student has no CourseGrades rows (previous values kept). */
+  function masterFields(layout, courses) {
+    if (!layout || !courses) return null;
+    const {cells} = assign(courses, layout);
+    return layout.all.flatMap(slot => [
+      {header: slot.label, value: cells.has(slot.course) ? cells.get(slot.course) : ''},
+      {header: slot.pctLabel, value: cells.has(slot.pct) ? cells.get(slot.pct) : ''}]);
   }
 
   /** Course code at the start of a course name: "MTH208A Geometry" -> MTH. */
@@ -144,7 +173,7 @@ const HR10GRADEIMPORT = (() => {
       const {cells, overflow} = assign(courses, layout);
       layout.all.forEach(s => { row[s.course] = ''; row[s.pct] = ''; });
       cells.forEach((v, c) => { row[c] = v; });
-      if (overflow.length) issues.push(student.id + ': no free Course column for ' + overflow.join(', ') + '. Add a Course N + Percentage pair to show it.');
+      if (overflow.length) issues.push(student.id + ': no free Course column for ' + overflow.join(', ') + '. Add a Course N + Course N% pair to show it.');
       courses.filter(c => c.drop).forEach(c => issues.push(student.id + ': ' + c.name + ' is flagged for a future drop.'));
       courses.filter(c => c.grade === '').forEach(c => issues.push(student.id + ': ' + c.name + ' has no Canvas grade yet.'));
     });
@@ -171,11 +200,15 @@ const HR10GRADEIMPORT = (() => {
       studentsUpdated: new Set(changes.map(c => c.studentNumber)).size, importDate: source.importDate};
   }
 
-  /** Reads Master + Grades + CourseGrades, writes Grades unless preview. */
-  function run(ss, sourceBook, preview) {
-    const sourceSheet = sourceBook.getSheetByName(SOURCE_TAB);
-    if (!sourceSheet) throw new Error('The imports workbook has no ' + SOURCE_TAB + ' tab.');
-    const source = readSource(sourceSheet);
+  /** Reads the CourseGrades tab of the imports workbook. */
+  function sourceFrom(book) {
+    const sheet = book.getSheetByName(SOURCE_TAB);
+    if (!sheet) throw new Error('The imports workbook has no ' + SOURCE_TAB + ' tab.');
+    return readSource(sheet);
+  }
+
+  /** Reads Master + Grades, writes Grades unless preview. source: from sourceFrom. */
+  function run(ss, source, preview) {
     return HR10CFG.withLock(() => {
       const sheet = ss.getSheetByName('Grades');
       if (!sheet) throw new Error('Grades tab is missing.');
@@ -203,5 +236,5 @@ const HR10GRADEIMPORT = (() => {
     }, 'Roster tools are busy; Grades was not updated. Please retry.');
   }
 
-  return Object.freeze({run, plan, slots, code, assign, readSource});
+  return Object.freeze({run, plan, slots, findSlots, masterFields, code, assign, readSource, sourceFrom});
 })();

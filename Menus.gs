@@ -1,4 +1,6 @@
-/** All 10RosterHR menus (v2.1). Requires Config.gs.
+/** All 10RosterHR menus (v2.3). Requires Config.gs.
+ * v2.3: Call Tools > Extend roster filters to all columns.
+ * v2.2: Call Tools > Add columns to all four roster tabs (RosterColumns.gs).
  * v2.1: one top-level Update menu with submenus; the two ECC
  * "archive & open PowerSchool" actions are repeated at the top for quick access.
  * onOpen is a simple trigger: it runs for every editor who opens the file, with
@@ -31,6 +33,8 @@ function build10Menus_() {
         .addItem('Reset Call form', 'resetCallEntry')
         .addSeparator()
         .addItem('Check roster sync', 'check10RosterSync')
+        .addItem('Add columns to all four roster tabs', 'add10RosterColumns')
+        .addItem('Extend roster filters to all columns', 'extend10RosterFilters')
     )
     .addSubMenu(
       ui.createMenu('ECC Tools')

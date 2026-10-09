@@ -1,8 +1,10 @@
-/** 10RosterHR source refresh v1.4 (also imports course grades into the Grades tab). Replace the old RefreshStudentData file.
+/** 10RosterHR source refresh v1.5 (course grades into Master's MTH/MTH% ... columns and the Grades tab). Replace the old RefreshStudentData file.
  * @NotOnlyCurrentDoc
  * Requires Config.gs, RosterSync v1.3, RemoveStudents.gs and GradesImport.gs.
- * Grades are imported after Master is saved, under their own lock; a Grades
- * problem is reported in the dialog and never undoes the Master refresh. Menus are built by Menus.gs. Info!H2 holds the separate imports workbook URL.
+ * Course grades from the CourseGrades tab are part of the Master refresh
+ * (synced to SCC, ECC and STAR). The Grades tab is written after Master is
+ * saved, under its own lock; a Grades tab problem is reported in the dialog and
+ * never undoes the Master refresh. Menus are built by Menus.gs. Info!H2 holds the separate imports workbook URL.
  * Source is READ ONLY. Planner performs no writes; shared helper saves everything.
  */
 const HR10REFRESH = (() => {
@@ -37,7 +39,10 @@ const HR10REFRESH = (() => {
       const active = ['Y', 'YES', 'TRUE', '1'].includes(text(row[u.columns.get('CURRENT_ACTIVE_STUDENT')]).toUpperCase());
       students.set(key, {row, active});
     });
-    return {u, p, students, book: upstream};
+    let grades = null, gradesError = '';
+    try { grades = HR10GRADEIMPORT.sourceFrom(upstream); }
+    catch (e) { gradesError = e.message; }
+    return {u, p, students, book: upstream, grades, gradesError};
   }
   function date(v, label) {
     if (v instanceof Date && !isNaN(v.getTime())) return new Date(v.getTime());
@@ -197,6 +202,9 @@ const HR10REFRESH = (() => {
     MAP.forEach(([src, dest]) => {
       if (!data.u.columns.has(src)) report.issues.push('Upstream is missing ' + src + '; ' + dest + ' retained.');
     });
+    const gradeLayout = HR10GRADEIMPORT.findSlots(master.headers, 0);
+    if (data.gradesError) report.issues.push('Course grades not refreshed: ' + data.gradesError);
+    else if (!gradeLayout) report.issues.push('Master has no course columns (e.g. MTH and MTH%); course grades not copied to Master.');
     function add(key, rowNumber, header, value) {
       const c = master.columns.get(header);
       if (!c) throw new Error('Master is missing ' + header);
@@ -250,6 +258,9 @@ const HR10REFRESH = (() => {
         }
         add(key, r, targetDate, parsedDate); add(key, r, targetScore, score);
       }
+      // Course names and Canvas percentages; students without CourseGrades rows keep theirs.
+      const gradeFields = data.grades && HR10GRADEIMPORT.masterFields(gradeLayout, data.grades.byId.get(key));
+      if (gradeFields) gradeFields.forEach(f => add(key, r, f.header, f.value));
     }
     data.students.forEach((v, key) => { if (v.active && !master.rows.has(key)) report.sourceOnly.push(key); });
     const relatedWrites = planContacts(ss, master.rows, data, report);
@@ -298,7 +309,8 @@ const HR10REFRESH = (() => {
     if (!preview) HR10CFG.log('SUCCESS', 'RefreshStudentData', '',
       report.changes.length + ' Master fields; ' + report.contacts.length + ' contact rows refreshed.', '');
     try {
-      report.grades = HR10GRADEIMPORT.run(ss, data.book, preview);
+      if (!data.grades) throw new Error('see the Course grades note above');
+      report.grades = HR10GRADEIMPORT.run(ss, data.grades, preview);
       report.grades.issues.forEach(x => report.issues.push('Grades: ' + x));
       if (!preview) HR10CFG.log('SUCCESS', 'GradesImport', '', report.grades.changes.length + ' Grades cells changed.', '');
     } catch (e) {
